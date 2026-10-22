@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 # When run as a gh extension (`gh accounts`), the wrapper may have injected a token.
 # This tool manages tokens per account explicitly, so start clean.
@@ -50,9 +50,19 @@ tilde_path() {
   case "$p" in "$HOME"|"$HOME"/*) printf '~%s' "${p#"$HOME"}" ;; *) printf '%s' "$p" ;; esac
 }
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+# Substring test without pipes (pipefail-safe: `cmd | grep -q` fails when cmd exits non-zero or gets SIGPIPE)
+contains() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
+ssh_login_ok() { # host user — GitHub's `ssh -T` always exits 1, so check the greeting text
+  local out; out="$(ssh -n -T -o BatchMode=yes -o StrictHostKeyChecking=accept-new "git@$1" 2>&1 || true)"
+  contains "$out" "Hi $2!"
+}
 
 reg_lines() { [ -f "$REG" ] && grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$REG" || true; }
-reg_has() { reg_lines | cut -f1 | grep -qx "$1"; }
+reg_has() { local slugs; slugs="$(reg_lines | cut -f1)"; contains "
+$slugs
+" "
+$1
+"; }
 default_user() { cat "$DEFAULT_FILE" 2>/dev/null || true; }
 
 real_gh() {
@@ -261,7 +271,7 @@ cmd_import() {
     [ -n "$email" ] || email="$(ask "  Commit email")"
     reg_write "$slug" "$folder" "$user" "$name" "$email" "$orgs"
     ok "Imported $slug"
-    grep -qE "^Host[[:space:]]+github-$slug\$" "$HOME/.ssh/config" 2>/dev/null \
+    grep -E "^Host[[:space:]]+github-$slug\$" "$HOME/.ssh/config" >/dev/null 2>&1 \
       || warn "No 'Host github-$slug' in ~/.ssh/config. Run 'gh-accounts add' with slug '$slug' to create it."
   done 3< <(git config --global --get-regexp '^includeif\.gitdir:.*\.path$' 2>/dev/null || true)
   [ "$found" -eq 1 ] || ok "Nothing to import"
@@ -328,13 +338,13 @@ cmd_add() {
     ok "Alias $host already present"
   fi
   local pub; pub="$(cut -d' ' -f2 "$key.pub")"
-  if gh_as api user/keys -q '.[].key' 2>/dev/null | grep -qF "$pub"; then
+  if contains "$(gh_as api user/keys -q '.[].key' 2>/dev/null || true)" "$pub"; then
     ok "Key already on GitHub"
   else
     gh_as_or_refresh ssh-key add "$key.pub" -t "$(scutil --get ComputerName 2>/dev/null || hostname) ($slug)" \
       && ok "Key uploaded to $GHU" || warn "Could not upload the key; add it at github.com/settings/keys"
   fi
-  if ssh -n -T -o StrictHostKeyChecking=accept-new "git@$host" 2>&1 | grep -q "Hi $GHU"; then
+  if ssh_login_ok "$host" "$GHU"; then
     ok "ssh -T git@$host → $GHU"
   else
     warn "ssh -T git@$host did not answer as $GHU (check the key on GitHub)"
@@ -350,7 +360,7 @@ cmd_add() {
       keyid="$(gpg --list-secret-keys --keyid-format=long "$email" | awk '/^sec/{split($2,a,"/"); print a[2]; exit}')"
     fi
     ok "GPG key: $keyid"
-    if gh_as api user/gpg_keys -q '.[].key_id' 2>/dev/null | grep -qi "$keyid"; then
+    if contains "$(gh_as api user/gpg_keys -q '.[].key_id' 2>/dev/null | tr '[:lower:]' '[:upper:]' || true)" "$(printf '%s' "$keyid" | tr '[:lower:]' '[:upper:]')"; then
       ok "GPG key already on GitHub"
     else
       local gtmp; gtmp="$(mktemp)"; gpg --armor --export "$keyid" > "$gtmp"
@@ -468,7 +478,7 @@ cmd_doctor() {
     GHU="$user"; host="github-$slug"
     got="$(gh_as api user -q .login 2>/dev/null || true)"
     if [ "$got" = "$user" ]; then ok "gh token → $user"; else err "gh token for $user does not work"; fails=$((fails+1)); fi
-    if ssh -n -T -o BatchMode=yes "git@$host" 2>&1 | grep -q "Hi $user"; then ok "ssh $host → $user"
+    if ssh_login_ok "$host" "$user"; then ok "ssh $host → $user"
     else err "ssh git@$host does not authenticate as $user"; fails=$((fails+1)); fi
     if git config --global --get "includeIf.gitdir:$folder/.path" >/dev/null; then ok "includeIf present"
     else err "Missing includeIf for $folder/"; fails=$((fails+1)); fi
