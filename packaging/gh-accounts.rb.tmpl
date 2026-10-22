@@ -1,0 +1,29 @@
+class GhAccounts < Formula
+  desc "Per-client GitHub accounts for gh, git, SSH and GPG, auto-selected by folder"
+  homepage "https://github.com/__OWNER__/gh-accounts"
+  url "https://github.com/__OWNER__/gh-accounts/archive/refs/tags/v__VERSION__.tar.gz"
+  sha256 "__SHA256__"
+  license "MIT"
+
+  depends_on "gh"
+
+  def install
+    bin.install "gh-accounts"
+  end
+
+  def caveats
+    <<~EOS
+      Run once to install the folder-aware gh wrapper and import existing setups:
+        gh-accounts init
+
+      Then add clients with:
+        gh-accounts add
+
+      For GPG-signed commits: brew install gnupg pinentry-mac
+    EOS
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/gh-accounts version")
+  end
+end
